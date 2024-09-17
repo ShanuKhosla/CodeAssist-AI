@@ -1,50 +1,98 @@
 import express from 'express';
-const app = express();
 import cors from 'cors';
-
-// Middleware used for parsing JSON data
-app.use(express.json());
-app.use(cors());
+import multer from 'multer';
+import fs from 'fs';
+import path from 'path';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-// Access your API key as an environment variable (see "Set up your API key" above)
-const genAI = new GoogleGenerativeAI("AIzaSyDOlrAUmRrAQYVD8Ny7Ib8O6ZCx4M7K3W4");
+const app = express();
+app.use(express.json());
+app.use(cors());
 
+// Configure multer for file uploads
+const upload = multer({ dest: 'uploads/' });
+
+const genAI = new GoogleGenerativeAI("AIzaSyDOlrAUmRrAQYVD8Ny7Ib8O6ZCx4M7K3W4");
 const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
 async function optimizeCode(codeSnippet) {
-  const prompt = `Given the code snippet. Analyze it and correct any errors and provide any scope of optimizations
-Here's the code:
+  const prompt = `Given the following code snippet, analyze it, correct any errors, and provide optimizations:
+
 ${codeSnippet}
 
-Provide the optimized code. 
-`;
+Please provide:
+1. The optimized code
+2. A list of optimizations made
+
+Format your response as follows:
+OPTIMIZED CODE:
+[Your optimized code here]
+
+OPTIMIZATIONS:
+- [First optimization]
+- [Second optimization]
+- [etc.]`;
 
   try {
     const result = await model.generateContent(prompt);
     const response = await result.response;
-    const text = await response.text(); // Ensure text is properly awaited
-    return { code: text.trim() }; // Return the optimized code directly
+    const text = await response.text();
+    
+    // Split the response into optimized code and optimizations
+    const [optimizedCodeSection, optimizationsSection] = text.split('OPTIMIZATIONS:');
+    
+    return {
+      code: optimizedCodeSection.replace('OPTIMIZED CODE:', '').trim(),
+      optimizations: optimizationsSection.split('-').slice(1).map(opt => opt.trim())
+    };
   } catch (error) {
-    console.error('Error calling checkCode:', error);
-    return { error: 'Failed to optimize code' };
+    console.error('Error optimizing code:', error);
+    throw new Error('Failed to optimize code: ' + error.message);
   }
 }
-async function translateCode(codeSnippet, toLang) {
-  const prompt = `Translate the following code into ${toLang}:
-${codeSnippet}
-`;
+
+app.post('/upload-file', upload.single('file'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No file uploaded' });
+  }
+
+  const filePath = req.file.path;
 
   try {
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const translatedCode = await response.text(); // Ensure text is properly awaited
-    return { code: translatedCode.trim() }; // Return translated code directly
+    // Read file content
+    const fileContent = fs.readFileSync(filePath, 'utf-8');
+    console.log('File content:', fileContent); // Log file content for debugging
+
+    // Optimize code
+    const optimizedResult = await optimizeCode(fileContent);
+    console.log('Optimization result:', optimizedResult); // Log optimization result for debugging
+
+    // Remove the temporary file
+    fs.unlinkSync(filePath);
+
+    // Send response
+    res.json({ output: optimizedResult });
   } catch (error) {
-    console.error('Error calling translateCode:', error);
-    return { error: 'Failed to translate code' };
+    console.error('Error processing file:', error);
+    res.status(500).json({ error: 'Failed to process file', details: error.message });
   }
-}
+});
+
+app.post('/optimize-code', async (req, res) => {
+  const { code } = req.body;
+
+  if (!code || code.trim() === '') {
+    return res.status(400).json({ error: 'No code provided' });
+  }
+
+  try {
+    const optimizedResult = await optimizeCode(code);
+    res.json({ output: optimizedResult });
+  } catch (error) {
+    console.error('Error optimizing code:', error);
+    res.status(500).json({ error: 'Failed to optimize code', details: error.message });
+  }
+});
 
 async function debugCode(codeSnippet) {
   const prompt = `Given the code snippet. Analyze it, identify any errors, and provide a corrected version.
@@ -101,7 +149,9 @@ app.post('/test-code', async (req, res) => {
 });
 
 
-
+app.get('/ping', (req, res) => {
+  res.status(200).setDefaultEncoding('Server is awake!');
+})
 
 app.post('/optimize-code', async (req, res) => {
   const { code } = req.body; // Extract code from request body
